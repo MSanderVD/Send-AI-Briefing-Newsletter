@@ -577,7 +577,12 @@ def validate_statistics(html: str, collected: dict) -> list[str]:
     suspicious = []
     for number in set(numbers):
         digits_only = re.sub(r'[^\d.,]', '', number)
-        if digits_only not in all_source_text:
+        # Englische Quellen schreiben Dezimalzahlen mit Punkt ('52.7'),
+        # der deutsche Report korrekt mit Komma ('52,7') - beide Schreib-
+        # weisen gegen den Quelltext prüfen, bevor als unbelegt gilt.
+        variant_a = digits_only.replace(",", ".")
+        variant_b = digits_only.replace(".", ",")
+        if variant_a not in all_source_text and variant_b not in all_source_text:
             suspicious.append(number)
     if suspicious:
         logger.warning(f"Prozentangaben ohne Beleg in den Quellen gefunden: {suspicious}")
