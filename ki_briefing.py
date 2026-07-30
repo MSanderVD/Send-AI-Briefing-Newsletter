@@ -445,6 +445,14 @@ def call_openrouter(prompt: str) -> str:
                 logger.info(f"429 bei {model} - warte {wait}s")
                 time.sleep(wait)
                 continue
+            if resp.status_code in (401, 403):
+                # Ungültiger/fehlender API-Key betrifft ALLE Modelle gleich -
+                # sinnlos, hier weitere Modelle durchzuprobieren.
+                raise PermissionError(
+                    f"OpenRouter meldet HTTP {resp.status_code} (API-Key ungültig, "
+                    f"fehlend oder widerrufen) - Details: {resp.text[:300]}. "
+                    "Bitte OPENROUTER_API_KEY-Secret prüfen."
+                )
             if resp.status_code in (400, 404, 500, 502, 503):
                 last_error = f"{model}: HTTP {resp.status_code} - {resp.text[:300]}"
                 logger.warning(f"Modell {model} fehlgeschlagen: {last_error}")
@@ -580,7 +588,44 @@ def run(week_label: str, subject: str):
     error_count = sum(1 for entries in collected.values() for e in entries if e["status"] != "ok")
     logger.info(f"{ok_count} Quellen erfolgreich abgerufen, {error_count} fehlgeschlagen.")
 
-    body_html = generate_briefing_html(collected, week_label)
+    output_dir = os.environ.get("OUTPUT_DIR", "output")
+    os.makedirs(output_dir, exist_ok=True)
+    safe_label = week_label.replace(" ", "_").replace("/", "-")
+    output_path = os.path.join(output_dir, f"KI-Briefing_{safe_label}.html")
+    now_str = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
+
+    try:
+        body_html = generate_briefing_html(collected, week_label)
+    except Exception as exc:
+        # Selbst bei einem Totalausfall (z.B. ungültiger API-Key, alle
+        # Modelle fehlgeschlagen) soll NICHT die gesamte Recherche
+        # spurlos verloren gehen - mindestens eine Diagnose-Datei mit
+        # den erfolgreich abgerufenen Quellen wird gespeichert, damit
+        # ein Actions-Artifact entsteht statt gar nichts.
+        source_list = "".join(
+            f"<li>{'✅' if e['status'] == 'ok' else '❌'} {e['name']} - {e['url']}</li>"
+            for entries in collected.values() for e in entries
+        )
+        error_html = f"""<!DOCTYPE html>
+<html lang="de">
+<head><meta charset="utf-8"><title>KI-Briefing FEHLGESCHLAGEN: {week_label}</title></head>
+<body style="font-family:Arial,sans-serif;max-width:800px;margin:40px auto;padding:0 20px;">
+<div style="background:#f8d7da;border:1px solid #dc3545;padding:16px;">
+<h1 style="color:#721c24;">KI-Briefing konnte nicht erstellt werden</h1>
+<p><strong>Fehler:</strong> {type(exc).__name__}: {exc}</p>
+</div>
+<h2>Trotzdem erfolgreich abgerufene Quellen ({ok_count} von {ok_count + error_count}):</h2>
+<ul>{source_list}</ul>
+<div style="margin-top:40px;font-size:12px;color:#888;">
+Automatisch erstellt am {now_str} · Alle Angaben ohne Gewähr
+</div>
+</body>
+</html>"""
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(error_html)
+        logger.info(f"Fehler-Diagnose gespeichert unter: {output_path}")
+        raise  # Job soll weiterhin als fehlgeschlagen markiert werden
+
     unknown_urls = validate_output_urls(body_html, collected)
     suspicious_names = validate_source_names(body_html, collected)
 
@@ -619,7 +664,6 @@ def run(week_label: str, subject: str):
             f"</ul></details>"
         )
 
-    now_str = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
     full_html = f"""<!DOCTYPE html>
 <html lang="de">
 <head><meta charset="utf-8"><title>KI-Briefing: {week_label}</title></head>
@@ -635,14 +679,9 @@ Alle Angaben ohne Gewähr
 </body>
 </html>"""
 
-    # Report IMMER als Datei speichern - unabhängig davon, ob der
-    # Mailversand danach klappt. So geht bei einem Versand-Fehler
-    # (z.B. fehlendes/falsches Secret) nicht der ganze Rechercheinhalt
-    # verloren.
-    output_dir = os.environ.get("OUTPUT_DIR", "output")
-    os.makedirs(output_dir, exist_ok=True)
-    safe_label = week_label.replace(" ", "_").replace("/", "-")
-    output_path = os.path.join(output_dir, f"KI-Briefing_{safe_label}.html")
+    # Report speichern - unabhängig davon, ob der Mailversand danach
+    # klappt. So geht bei einem Versand-Fehler (z.B. fehlendes/falsches
+    # Secret) nicht der ganze Rechercheinhalt verloren.
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(full_html)
     logger.info(f"Report gespeichert unter: {output_path}")
