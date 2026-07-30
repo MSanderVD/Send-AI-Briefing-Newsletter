@@ -509,6 +509,15 @@ REGEL 4 (Format): Beginne DIREKT mit der Executive Summary. Füge KEINE
 eigene Titelüberschrift (kein <h1>) hinzu - das übernimmt die aufrufende
 Anwendung bereits.
 
+REGEL 5 (Executive Summary): Die Executive Summary darf NUR Sachverhalte
+zusammenfassen, die auch weiter unten in einer der Kategorie-Meldungen
+mit eigener Quellenangabe vorkommen. Erfinde in der Summary KEINE
+zusätzlichen Zahlen, Prozentangaben, Benchmark-Werte oder Produktnamen,
+die nicht auch in mindestens einer Einzelmeldung stehen - auch nicht,
+wenn sie plausibel klingen oder dir aus anderem Wissen bekannt
+vorkommen. Im Zweifel: allgemeiner formulieren statt eine Zahl zu
+erfinden.
+
 KONTEXT (echt abgerufene Webseiten):
 {context}
 
@@ -544,6 +553,35 @@ def validate_output_urls(html: str, collected: dict) -> list[str]:
     if unknown:
         logger.warning(f"{len(unknown)} unbekannte URL(s) in der LLM-Antwort gefunden: {unknown}")
     return unknown
+
+
+def validate_statistics(html: str, collected: dict) -> list[str]:
+    """Prüft jede Prozent-/Kennzahl-Angabe im Report gegen die tatsächlich
+    abgerufenen Rohtexte. Fängt genau das beobachtete Muster ab: eine
+    plausibel klingende, aber erfundene Zahl (z.B. ein Benchmark-Wert),
+    die in der Executive Summary auftaucht, obwohl sie in keiner der
+    abgerufenen Quellen tatsächlich vorkommt - und die die Meldungs-
+    bezogene Quellenprüfung nicht abdeckt, weil die Summary keine eigene
+    Quellenangabe hat.
+
+    Prüft nur die Zahl selbst (z.B. '94,6'), nicht den ganzen Satz -
+    das reicht, weil eine echte Zahl aus einer Quelle dort auch als
+    Ziffernfolge auftauchen muss; eine erfundene Zahl taucht nirgends auf."""
+    all_source_text = " ".join(
+        e.get("text", "") for entries in collected.values() for e in entries
+        if e["status"] == "ok"
+    )
+    plain_html = re.sub(r'<[^>]+>', ' ', html)
+
+    numbers = re.findall(r'\d+(?:[.,]\d+)?\s?%', plain_html)
+    suspicious = []
+    for number in set(numbers):
+        digits_only = re.sub(r'[^\d.,]', '', number)
+        if digits_only not in all_source_text:
+            suspicious.append(number)
+    if suspicious:
+        logger.warning(f"Prozentangaben ohne Beleg in den Quellen gefunden: {suspicious}")
+    return sorted(suspicious)
 
 
 # ---------------------------------------------------------------------------
@@ -628,6 +666,7 @@ Automatisch erstellt am {now_str} · Alle Angaben ohne Gewähr
 
     unknown_urls = validate_output_urls(body_html, collected)
     suspicious_names = validate_source_names(body_html, collected)
+    suspicious_stats = validate_statistics(body_html, collected)
 
     warning_items = []
     if unknown_urls:
@@ -640,6 +679,13 @@ Automatisch erstellt am {now_str} · Alle Angaben ohne Gewähr
             "<strong>Verdächtige Quellenangaben</strong> (passen zu keinem "
             f"konfigurierten Quellennamen): <ul>"
             f"{''.join(f'<li>{n}</li>' for n in suspicious_names)}</ul>"
+        )
+    if suspicious_stats:
+        warning_items.append(
+            "<strong>Unbelegte Prozent-/Kennzahlen</strong> (tauchen im Report "
+            "auf, aber in keiner der abgerufenen Quellen - möglicherweise "
+            f"erfunden, z.B. in der Executive Summary): <ul>"
+            f"{''.join(f'<li>{s}</li>' for s in suspicious_stats)}</ul>"
         )
 
     warning_banner = ""
